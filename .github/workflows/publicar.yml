@@ -1,0 +1,83 @@
+# Gera o .exe e publica uma versão nova no GitHub Releases, sozinho.
+# Dispara sempre que você envia (push) algo para a branch "main".
+# Só publica se o APP_VERSION do app.py for uma versão que ainda não existe.
+name: Publicar versão
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:        # permite rodar na mão pela aba "Actions"
+
+permissions:
+  contents: write           # necessário para criar a versão (release)
+
+jobs:
+  publicar:
+    runs-on: windows-latest
+    steps:
+      - name: Baixar o código
+        uses: actions/checkout@v4
+
+      - name: Instalar o Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Ler a versão do app.py
+        id: versao
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(python -c "import re; print(re.search(r'^APP_VERSION\s*=\s*[\"\x27]([^\"\x27]+)', open('app.py', encoding='utf-8').read(), re.M).group(1))")
+          echo "Versão no app.py: $VER"
+          echo "ver=$VER" >> "$GITHUB_OUTPUT"
+          if gh release view "v$VER" > /dev/null 2>&1; then
+            echo "A versão v$VER já foi publicada. Nada a fazer (aumente o APP_VERSION para publicar)."
+            echo "existe=sim" >> "$GITHUB_OUTPUT"
+          else
+            echo "existe=nao" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Gerar o .exe
+        if: steps.versao.outputs.existe == 'nao'
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip "pyinstaller>=6.10"
+          python -m PyInstaller --noconfirm --onefile --windowed \
+            --name "MhnetCopyScripts" \
+            --icon "imagens/mhnet_icon.ico" \
+            --add-data "imagens;imagens" \
+            app.py
+
+      - name: Criar o latest.json (versão, tamanho e SHA-256)
+        if: steps.versao.outputs.existe == 'nao'
+        shell: bash
+        env:
+          VER: ${{ steps.versao.outputs.ver }}
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          exe = "dist/MhnetCopyScripts.exe"
+          data = open(exe, "rb").read()
+          info = {
+              "version": os.environ["VER"],
+              "file": "MhnetCopyScripts.exe",
+              "size": len(data),
+              "sha256": hashlib.sha256(data).hexdigest(),
+          }
+          json.dump(info, open("dist/latest.json", "w"), indent=2)
+          print(info)
+          PY
+
+      - name: Publicar a versão
+        if: steps.versao.outputs.existe == 'nao'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VER: ${{ steps.versao.outputs.ver }}
+        run: |
+          gh release create "v$VER" dist/MhnetCopyScripts.exe dist/latest.json \
+            --title "Mhnet CopyScripts $VER" \
+            --notes "Versão $VER. Quem já tem o app recebe esta atualização sozinho ao abrir." \
+            --latest
