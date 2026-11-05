@@ -26,12 +26,12 @@ from tkinter import ttk, filedialog, messagebox, colorchooser, font as tkfont
 # APP_NAME é o nome da pasta de dados (mantido para não perder os dados já salvos)
 APP_NAME = "copyscripts"
 APP_DISPLAY_NAME = "Mhnet CopyScripts"
-APP_VERSION = "2.1"     # AUMENTE este número a cada versão nova (2.1 -> 2.2 -> 2.3 ...)
+APP_VERSION = "2.2"     # AUMENTE este número a cada versão nova (2.1 -> 2.2 -> 2.3 ...)
 
 # ---------------- atualização automática ----------------
 # Coloque aqui "seu-usuario/nome-do-repositorio" do GitHub (ex.: "joaosilva/mhnet-copyscripts").
 # Vazio = atualização automática desligada.
-UPDATE_REPO = "joaopdalvs/mhnet-copyscripts"
+UPDATE_REPO = "joaopdalves/mhnet-copyscripts"
 UPDATE_ASSET = "MhnetCopyScripts.exe"   # nome do .exe publicado no GitHub (o workflow usa o mesmo)
 UPDATE_CHECK_TIMEOUT = 4                # segundos esperando a internet antes de desistir
 
