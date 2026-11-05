@@ -26,7 +26,7 @@ from tkinter import ttk, filedialog, messagebox, colorchooser, font as tkfont
 # APP_NAME é o nome da pasta de dados (mantido para não perder os dados já salvos)
 APP_NAME = "copyscripts"
 APP_DISPLAY_NAME = "Mhnet CopyScripts"
-APP_VERSION = "2.2"     # AUMENTE este número a cada versão nova (2.1 -> 2.2 -> 2.3 ...)
+APP_VERSION = "2.3"     # AUMENTE este número a cada versão nova (2.1 -> 2.2 -> 2.3 ...)
 
 # ---------------- atualização automática ----------------
 # Coloque aqui "seu-usuario/nome-do-repositorio" do GitHub (ex.: "joaosilva/mhnet-copyscripts").
@@ -2252,7 +2252,7 @@ class CategoryDialog(BaseDialog):
         RoundButton(btn_row, "Salvar", command=self.on_save,
                     bg=palette["accent"], fg=palette["accent_text"]).pack(side="left", padx=6)
 
-        self.center(360, 360)
+        self.center_to_content(360)   # altura exata do conteúdo (antes era fixa e sobrava espaço embaixo)
 
     def _redraw_swatches(self):
         """Desenha as cores; a escolhida ganha um anel (borda) ao redor para ficar bem visível."""
