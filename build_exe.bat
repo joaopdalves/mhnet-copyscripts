@@ -20,8 +20,8 @@ if errorlevel 1 (
 )
 
 REM 2) Instala o PyInstaller (caso ainda nao esteja instalado)
-echo Instalando/atualizando o PyInstaller...
-python -m pip install --upgrade pyinstaller
+echo Instalando/atualizando o PyInstaller e a reportlab...
+python -m pip install --upgrade pyinstaller "reportlab==4.2.0"
 
 REM 3) Gera o executavel
 echo.
@@ -31,6 +31,8 @@ python -m PyInstaller ^
     --onefile ^
     --windowed ^
     --name "Mhnet CopyScripts" ^
+    --collect-submodules reportlab.pdfbase ^
+    --exclude-module numpy ^
     --icon "imagens\mhnet_icon.ico" ^
     --add-data "imagens;imagens" ^
     app.py

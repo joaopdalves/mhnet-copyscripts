@@ -26,7 +26,7 @@ from tkinter import ttk, filedialog, messagebox, colorchooser, font as tkfont
 # APP_NAME é o nome da pasta de dados (mantido para não perder os dados já salvos)
 APP_NAME = "copyscripts"
 APP_DISPLAY_NAME = "Mhnet CopyScripts"
-APP_VERSION = "2.3"     # AUMENTE este número a cada versão nova (2.1 -> 2.2 -> 2.3 ...)
+APP_VERSION = "2.4"     # AUMENTE este número a cada versão nova (2.1 -> 2.2 -> 2.3 ...)
 
 # ---------------- atualização automática ----------------
 # Coloque aqui "seu-usuario/nome-do-repositorio" do GitHub (ex.: "joaosilva/mhnet-copyscripts").
@@ -50,6 +50,24 @@ def get_app_data_dir():
 DATA_DIR = get_app_data_dir()
 DATA_FILE = os.path.join(DATA_DIR, "data.json")
 BACKUP_DIR = os.path.join(DATA_DIR, "backups")
+
+UPDATE_LOG = os.path.join(DATA_DIR, "update.log")
+
+
+def update_log(msg):
+    """Registra o que o atualizador fez em %APPDATA%\\copyscripts\\update.log (para descobrir problemas)."""
+    try:
+        if os.path.exists(UPDATE_LOG) and os.path.getsize(UPDATE_LOG) > 200_000:
+            with open(UPDATE_LOG, "r", encoding="utf-8", errors="replace") as f:
+                tail = f.read()[-50_000:]
+            with open(UPDATE_LOG, "w", encoding="utf-8") as f:
+                f.write(tail)
+        stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(UPDATE_LOG, "a", encoding="utf-8") as f:
+            f.write(f"{stamp}  [v{APP_VERSION}]  {msg}\n")
+    except Exception:
+        pass
+
 
 def updates_enabled():
     """Só o .exe (não o `python app.py`) no Windows, e só se o repositório estiver configurado."""
@@ -92,7 +110,7 @@ def download_update(info, progress):
     """Baixa o .exe novo ao lado do atual (arquivo .download) e confere tamanho e SHA-256."""
     import hashlib
     exe = os.path.abspath(sys.executable)
-    tmp = exe + ".download"
+    tmp = f"{exe}.{os.getpid()}.download"       # nome único: a limpeza de sobras nunca apaga o download em andamento
     url = f"https://github.com/{UPDATE_REPO.strip()}/releases/download/v{info['version']}/{info['file']}"
     expected = int(info.get("size") or 0)
     h = hashlib.sha256()
@@ -146,15 +164,50 @@ def install_update(new_file):
     return exe
 
 
-def relaunch(exe):
-    """Abre o .exe novo como um programa independente (fora da pasta temporária deste)."""
+def _clean_child_env():
+    """Ambiente para abrir o .exe novo como programa independente (sem herdar a pasta temporária deste)."""
     env = dict(os.environ)
     env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
     for k in ("_MEIPASS2", "_PYI_APPLICATION_HOME_DIR", "_PYI_ARCHIVE_FILE",
               "_PYI_PARENT_PROCESS_LEVEL", "_PYI_SPLASH_IPC", "TCL_LIBRARY", "TK_LIBRARY"):
         env.pop(k, None)
+    return env
+
+
+def relaunch(exe):
+    """Abre o .exe novo como um programa independente."""
     flags = 0x00000008 | 0x00000200            # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-    subprocess.Popen([exe], env=env, cwd=os.path.dirname(exe), creationflags=flags, close_fds=True)
+    subprocess.Popen([exe], env=_clean_child_env(), cwd=os.path.dirname(exe), creationflags=flags,
+                     close_fds=True)
+
+
+def install_update_after_exit(new_file):
+    """Plano B: se o Windows não deixar trocar o .exe com ele aberto, um ajudante invisível
+    (PowerShell) espera este app fechar, troca o arquivo e abre a versão nova."""
+    exe = os.path.abspath(sys.executable)
+    pids = [os.getpid()]
+    try:
+        if os.path.basename(getattr(sys, "_MEIPASS", "")).startswith("_MEI"):
+            pids.append(os.getppid())          # .exe de arquivo único: o processo "pai" também é este app
+    except Exception:
+        pass
+
+    def q(s):
+        return "'" + str(s).replace("'", "''") + "'"
+
+    script = (
+        "$ErrorActionPreference = 'SilentlyContinue'\n"
+        f"foreach ($p in @({','.join(str(x) for x in pids)})) {{ Wait-Process -Id $p -Timeout 40 }}\n"
+        "for ($i = 0; $i -lt 80; $i++) {\n"
+        f"  try {{ Move-Item -LiteralPath {q(new_file)} -Destination {q(exe)} -Force -ErrorAction Stop; break }}\n"
+        "  catch { Start-Sleep -Milliseconds 500 }\n"
+        "}\n"
+        f"Start-Process -FilePath {q(exe)}\n"
+    )
+    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    subprocess.Popen(["powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                      "-WindowStyle", "Hidden", "-EncodedCommand", encoded],
+                     env=_clean_child_env(), creationflags=0x08000000, close_fds=True)   # CREATE_NO_WINDOW
 
 
 def cleanup_old_versions():
@@ -168,7 +221,8 @@ def cleanup_old_versions():
         except OSError:
             return
         for name in names:
-            if name.startswith(base + ".") and (name.endswith(".old") or name.endswith(".download")):
+            if name.startswith(base + ".") and (name.endswith(".old") or name.endswith(".download")) \
+                    and name != f"{base}.{os.getpid()}.download":
                 try:
                     os.remove(os.path.join(folder, name))
                 except OSError:
@@ -356,6 +410,8 @@ SVG_ICONS = {
     "scissors": _svg('<circle cx="6" cy="6" r="3"/><path d="M8.12 8.12 12 12"/><path d="M20 4 8.12 15.88"/><circle cx="6" cy="18" r="3"/><path d="M14.8 14.8 20 20"/>'),
     "select-all": _svg('<path d="M5 3a2 2 0 0 0-2 2"/><path d="M19 3a2 2 0 0 1 2 2"/><path d="M21 19a2 2 0 0 1-2 2"/><path d="M5 21a2 2 0 0 1-2-2"/><path d="M9 3h1"/><path d="M9 21h1"/><path d="M14 3h1"/><path d="M14 21h1"/><path d="M3 9v1"/><path d="M21 9v1"/><path d="M3 14v1"/><path d="M21 14v1"/>'),
     "alert": _svg('<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>'),
+    "file-text": _svg('<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/>'
+                      '<path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>'),
     "info": _svg('<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>'),
     "check-circle": _svg('<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>'),
     "x-circle": _svg('<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/>'),
@@ -2419,6 +2475,508 @@ def show_message(parent, palette, title, heading, message="", kind="info"):
     _run_message(parent, palette, title=title, heading=heading, message=message, kind=kind)
 
 
+# ======================================================================
+#  TROCA DE TITULARIDADE
+#  Substitui o antigo "impressora.exe" (35 MB, abria um terminal e exigia o texto exato).
+#  Aqui é tudo nativo: formulário com um campo por item, leitura tolerante do texto do
+#  cliente e um gerador de PDF próprio (sem reportlab/numpy/Pillow: zero peso extra).
+# ======================================================================
+import unicodedata
+
+
+# (chave, rótulo no formulário, rótulo no PDF)
+TIT_CEDENTE = [
+    ("ced_nome", "Nome / Razão Social", "Nome/Razão Social"),
+    ("ced_cpf", "CPF / CNPJ", "CPF/CNPJ"),
+    ("ced_doc", "RG / Inscrição Estadual", "Doc. Ident./Insc. Estadual"),
+    ("ced_tel", "Telefone de contato", "Telefone de Contato"),
+    ("ced_email", "E-mail atualizado", "E-mail"),
+]
+TIT_CESSIONARIO = [
+    ("ces_nome", "Nome / Razão Social", "Nome/Razão Social"),
+    ("ces_cpf", "CPF / CNPJ", "CPF/CNPJ"),
+    ("ces_doc", "RG / Inscrição Estadual", "Doc. Ident./Insc. Estadual"),
+    ("ces_tel", "Telefone de contato", "Telefone de Contato"),
+    ("ces_end", "Endereço de cobrança", "Endereço para Cobrança"),
+    ("ces_email", "E-mail (diferente do atual)", "E-mail"),
+]
+TIT_SERVICO = [
+    ("contrato", "Nº do contrato", "Termo de Adesão Nº"),
+    ("plano", "Plano contratado", "Plano Contratado"),
+    ("valor", "Valor do plano (só o número)", "Valor do Plano"),
+    ("vencimento", "Vencimento", "Vencimento"),
+    ("pagamento", "Forma de pagamento", "Forma de Pagamento"),
+    ("equipamentos", "Equipamentos (comodato)", "Equipamentos (Comodato)"),
+]
+TIT_SECTIONS = [
+    ("Titular atual (Cedente)", TIT_CEDENTE),
+    ("Novo titular (Cessionário)", TIT_CESSIONARIO),
+    ("Serviço contratado", TIT_SERVICO),
+]
+TIT_KEYS = [k for _t, fields in TIT_SECTIONS for k, _l, _p in fields]
+
+# Script que o atendente envia ao cliente (mesmo formato que o cliente já está acostumado)
+TIT_SCRIPT = (
+    "Para realizar a troca de titularidade, preciso dos dados abaixo:\n"
+    "\n"
+    "TITULAR ATUAL:\n"
+    "• Nome/Razão Social:\n"
+    "• CPF/CNPJ:\n"
+    "• Documento de Identificação/Inscrição Estadual:\n"
+    "• Telefone de Contato:\n"
+    "• E-mail atualizado:\n"
+    "\n"
+    "NOVO TITULAR:\n"
+    "• Nome/Razão Social:\n"
+    "• CPF/CNPJ:\n"
+    "• Documento de Identificação/Inscrição Estadual:\n"
+    "• Telefone de Contato:\n"
+    "• Endereço:\n"
+    "• E-mail diferente do e-mail cadastrado:"
+)
+
+TIT_TERMO_TEXTO = (
+    "Pelo presente Termo de Transferência Definitiva dos Direitos de Uso e Obrigações Contratuais é "
+    "transferida a titularidade de acesso à internet acima identificado para o Cessionário acima "
+    "qualificado, que se submete às condições e disposições regulamentares conforme cláusulas "
+    "contratuais constantes no Termo de Adesão de acesso à internet firmado entre o Cedente e a MHNET "
+    "Telecomunicações Eireli, no qual neste ato recebe uma cópia. O Cessionário se torna titular dos "
+    "direito e obrigações correspondentes, assumindo automaticamente, inteira responsabilidade pelas "
+    "despesas, apuradas regularmente, relacionadas com a transferência e o uso do serviço, não se "
+    "eximindo de eventuais débitos anteriores ainda não repassados, faturados e/ou cobrados, "
+    "responsabilizando-se também, pelas informações contidas neste documento. O Cessionário assume, "
+    "ainda, eventuais condições de permanência associadas ao acesso de internet via rádio objeto do "
+    "presente ato."
+)
+
+
+def _tit_norm(s):
+    """minúsculas, sem acento e com espaços simples: 'Razão  Social' -> 'razao social'."""
+    s = unicodedata.normalize("NFKD", str(s))
+    s = "".join(ch for ch in s if not unicodedata.combining(ch))
+    return " ".join(s.lower().split())
+
+
+def _tit_field_kind(label):
+    """Descobre de qual item do script é o rótulo escrito pelo cliente (aceita variações)."""
+    n = _tit_norm(label)
+    if not n:
+        return None
+    if "plano" in n:
+        return "plano"
+    if "valor" in n or "mensalidade" in n:
+        return "valor"
+    if "vencimento" in n:
+        return "vencimento"
+    if "pagamento" in n:
+        return "pagamento"
+    if "equipamento" in n or "comodato" in n:
+        return "equipamentos"
+    if "e-mail" in n or "email" in n or "e mail" in n:
+        return "email"
+    if "endereco" in n:
+        return "end"
+    if "contrato" in n or "termo de adesao" in n:
+        return "contrato"
+    if "cpf" in n or "cnpj" in n:
+        return "cpf"
+    if ("documento" in n or "identidade" in n or "inscricao" in n or n in ("rg", "ie")
+            or n.startswith("rg ") or n.startswith("rg/")):
+        return "doc"
+    if "telefone" in n or "celular" in n or "whats" in n or "fone" in n or n == "contato":
+        return "tel"
+    if "nome" in n or "razao social" in n:
+        return "nome"
+    return None
+
+
+_TIT_PERSON_KINDS = ("nome", "cpf", "doc", "tel", "email", "end")
+_TIT_BULLET_RE = re.compile(r"^[\s•●▪►◦·\-\*–—>\d\.\)]+")
+
+
+def parse_titularidade(text):
+    """Lê o texto que o cliente mandou e devolve {chave: valor}.
+    Tolerante: aceita com/sem marcadores, maiúsculas/minúsculas, sem acento, rótulos diferentes
+    ('Telefone', 'Celular', 'RG'...), valor na linha de baixo e blocos fora de ordem."""
+    data = {}
+    section = None                       # "ced" (titular atual) | "ces" (novo titular)
+    pending = None
+    for raw in str(text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if ":" not in line:
+            # linha sem "rótulo:" -> ou é cabeçalho de bloco, ou é o valor do item que veio vazio
+            n = _tit_norm(_TIT_BULLET_RE.sub("", line))
+            if "novo titular" in n or "cessionario" in n:
+                section, pending = "ces", None
+            elif "titular atual" in n or "atual titular" in n or "cedente" in n:
+                section, pending = "ced", None
+            elif pending:
+                data.setdefault(pending, line)
+                pending = None
+            continue
+        label, value = line.split(":", 1)
+        label = _TIT_BULLET_RE.sub("", label).strip()
+        value = value.strip()
+        nlabel = _tit_norm(label)
+
+        # cabeçalhos de bloco ("NOVO TITULAR:", "Titular atual", "Cedente"...)
+        if not value:
+            if "novo titular" in nlabel or "cessionario" in nlabel or "novo responsavel" in nlabel:
+                section, pending = "ces", None
+                continue
+            if ("titular atual" in nlabel or "atual titular" in nlabel or "cedente" in nlabel
+                    or nlabel in ("titular", "dados do titular")):
+                section, pending = "ced", None
+                continue
+
+        kind = _tit_field_kind(label) if len(nlabel) <= 60 else None
+        if kind is None:
+            pending = None
+            continue
+
+        if kind in _TIT_PERSON_KINDS:
+            who = section
+            if who is None:
+                # sem cabeçalho: o 1º de cada item é do titular atual, o 2º do novo
+                who = "ces" if f"ced_{kind}" in data else "ced"
+            if who == "ced" and kind == "end":
+                key = "ced_end"          # endereço do cedente não vai no termo: ignora
+            else:
+                key = f"{who}_{kind}"
+        else:
+            key = kind
+
+        if value:
+            if key not in data:
+                data[key] = value
+            pending = None
+        else:
+            pending = key
+    data.pop("ced_end", None)
+    return {k: v for k, v in data.items() if k in TIT_KEYS and v}
+
+
+# ---------------- geração do PDF ----------------
+# REGRA DA EMPRESA: o termo tem que sair EXATAMENTE igual ao do antigo impressora.exe.
+# Por isso o PDF é montado com a mesma biblioteca (reportlab 4.2.0) e o mesmo código de layout
+# do programa original, linha por linha. Não altere textos, tamanhos ou posições abaixo.
+# A biblioteca só é carregada na hora de gerar o termo (não pesa na abertura do app).
+
+def _tit_original_data(values):
+    """Converte o formulário para os mesmos dados que o programa original montava."""
+    def xml(v):
+        # o original quebrava com '&', '<' ou '>' no texto; aqui eles saem iguais, sem quebrar
+        return str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    data = {}
+    # dados do cliente: campo vazio fica de fora -> no PDF sai "Não fornecido" (igual ao original)
+    person = {
+        "ced_nome": "nome_razao_social_cedente", "ced_cpf": "cpf_cnpj_cedente",
+        "ced_doc": "documento_identificacao_cedente", "ced_tel": "telefone_contato_cedente",
+        "ced_email": "email_atualizado_cedente",
+        "ces_nome": "nome_razao_social_cessionario", "ces_cpf": "cpf_cnpj_cessionario",
+        "ces_doc": "documento_identificacao_cessionario", "ces_tel": "telefone_contato_cessionario",
+        "ces_end": "endereco_cessionario", "ces_email": "email_novo_cessionario",
+    }
+    for key, orig in person.items():
+        v = str(values.get(key, "") or "").strip()
+        if v:
+            data[orig] = xml(v)
+    # dados do serviço: no original eram digitados em janelinhas, um por um (saem como digitados)
+    valor = re.sub(r"^\s*r\$\s*", "", str(values.get("valor", "") or "").strip(), flags=re.I)
+    data["número_do_contrato"] = xml(str(values.get("contrato", "") or "").strip())
+    data["plano_contratado"] = xml(str(values.get("plano", "") or "").strip())
+    data["valor_plano"] = xml(valor)                 # o PDF já escreve "R$ " antes do valor
+    data["vencimento"] = xml(str(values.get("vencimento", "") or "").strip())
+    data["forma_pagamento"] = xml(str(values.get("pagamento", "") or "").strip())
+    data["equipamentos"] = xml(str(values.get("equipamentos", "") or "").strip())
+    return data
+
+
+def generate_titularidade_pdf(values, path):
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.platypus import Paragraph, Frame, Spacer
+    from datetime import datetime
+
+    data = _tit_original_data(values)
+
+    # ===== a partir daqui: cópia fiel do generate_pdf() do impressora.exe =====
+    c = canvas.Canvas(path, pagesize=letter)
+    width, height = letter
+    margin = 72
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('TitleStyle', parent=styles['Title'], fontSize=16, alignment=1, spaceAfter=20)
+    normal_style = ParagraphStyle('NormalStyle', parent=styles['Normal'], fontSize=12)
+    frame = Frame(margin, margin, width - 2 * margin, height - 2 * margin, showBoundary=0)
+    frame.add(Paragraph('TERMO DE TRANSFERÊNCIA DEFINITIVA DE DIREITOS DE USO E OBRIGAÇÕES CONTRATUAIS', title_style), c)
+    frame.add(Paragraph(f"Termo de Adesão Nº: {data.get('número_do_contrato', 'Não fornecido')}", title_style), c)
+    text_content = [
+        Paragraph('<b>Cedente</b>', normal_style),
+        Paragraph(f"Nome/Razão Social: {data.get('nome_razao_social_cedente', 'Não fornecido')}", normal_style),
+        Paragraph(f"CPF/CNPJ: {data.get('cpf_cnpj_cedente', 'Não fornecido')}", normal_style),
+        Paragraph(f"Doc. Ident./Insc. Estadual: {data.get('documento_identificacao_cedente', 'Não fornecido')}", normal_style),
+        Paragraph(f"Telefone de Contato: {data.get('telefone_contato_cedente', 'Não fornecido')}", normal_style),
+        Paragraph(f"E-mail: {data.get('email_atualizado_cedente', 'Não fornecido')}", normal_style),
+        Spacer(1, 20),
+        Paragraph('<b>Cessionário</b>', normal_style),
+        Paragraph(f"Nome/Razão Social: {data.get('nome_razao_social_cessionario', 'Não fornecido')}", normal_style),
+        Paragraph(f"CPF/CNPJ: {data.get('cpf_cnpj_cessionario', 'Não fornecido')}", normal_style),
+        Paragraph(f"Doc. Ident./Insc. Estadual: {data.get('documento_identificacao_cessionario', 'Não fornecido')}", normal_style),
+        Paragraph(f"Telefone de Contato: {data.get('telefone_contato_cessionario', 'Não fornecido')}", normal_style),
+        Paragraph(f"Endereço Para Cobrança: {data.get('endereco_cessionario', 'Não fornecido')}", normal_style),
+        Paragraph(f"E-mail: {data.get('email_novo_cessionario', 'Não fornecido')}", normal_style),
+        Spacer(1, 20),
+        Paragraph('<b>Serviço Contratado</b>', normal_style),
+        Paragraph(f"Plano Contratado: {data.get('plano_contratado', 'Não fornecido')}", normal_style),
+        Paragraph(f"Valor Plano: R$ {data.get('valor_plano', 'Não fornecido')}", normal_style),
+        Paragraph(f"Vencimento: {data.get('vencimento', 'Não fornecido')}", normal_style),
+        Paragraph(f"Forma de Pagamento: {data.get('forma_pagamento', 'Não fornecido')}", normal_style),
+        Paragraph(f"Equipamentos (Comodato): {data.get('equipamentos', 'Não fornecido')}", normal_style),
+        Spacer(1, 40)]
+    frame.addFromList(text_content, c)
+    text = TIT_TERMO_TEXTO
+    styles = getSampleStyleSheet()
+    paragraph_style = ParagraphStyle('NormalStyle', parent=styles['Normal'], fontSize=10, alignment=1, leading=12)
+    paragraph = Paragraph(text, paragraph_style)
+    paragraph_width = width - 2 * margin
+    y_position = 175
+    paragraph_height = paragraph.wrap(paragraph_width, height - y_position)[1]
+    paragraph.drawOn(c, margin, y_position - paragraph_height)
+    today = datetime.now().strftime('%d/%m/%Y')
+    c.drawCentredString(width / 2, 30, f'Chapecó–SC, {today}')
+    c.save()
+    # ===== fim da cópia fiel =====
+    return path
+
+
+def titularidade_output_dir():
+    """Documentos\\Termos de Titularidade (cria se não existir)."""
+    base = os.path.join(os.path.expanduser("~"), "Documents")
+    if sys.platform.startswith("win"):
+        try:
+            import ctypes
+            from ctypes import wintypes
+            buf = ctypes.create_unicode_buffer(wintypes.MAX_PATH)
+            if ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, buf) == 0:   # CSIDL_PERSONAL
+                base = buf.value
+        except Exception:
+            pass
+    if not os.path.isdir(base):
+        base = os.path.expanduser("~")
+    path = os.path.join(base, "Termos de Titularidade")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def titularidade_filename(data):
+    def clean(s):
+        s = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", str(s or "")).strip(" .")
+        return " ".join(s.split())[:50]
+    parts = ["Termo de Titularidade"]
+    if clean(data.get("contrato")):
+        parts.append(clean(data.get("contrato")))
+    if clean(data.get("ces_nome")):
+        parts.append(clean(data.get("ces_nome")))
+    parts.append(datetime.datetime.now().strftime("%Y-%m-%d"))
+    return " - ".join(parts) + ".pdf"
+
+
+class TitularidadeDialog(BaseDialog):
+    """Formulário da troca de titularidade: um campo para cada item do script."""
+    WIDTH = 660
+    LABEL_W = 210
+
+    def __init__(self, parent, palette, values=None):
+        super().__init__(parent, "Troca de titularidade", palette)
+        p = self.palette
+        self.vars = {k: tk.StringVar(value=(values or {}).get(k, "")) for k in TIT_KEYS}
+        self.result = None
+        self.saved_values = None
+
+        # ---- topo (fixo): explicação + ações rápidas ----
+        top = tk.Frame(self, bg=p["bg"])
+        top.pack(side="top", fill="x", padx=20, pady=(14, 6))
+        tk.Label(top, text="Troca de titularidade", bg=p["bg"], fg=p["text"],
+                 font=(FONT_FAMILY, 13, "bold")).pack(anchor="w")
+        tk.Label(top, text="Envie o script ao cliente, cole a resposta dele e confira os campos.",
+                 bg=p["bg"], fg=p["text_dim"], font=(FONT_FAMILY, 9)).pack(anchor="w", pady=(2, 8))
+        actions = tk.Frame(top, bg=p["bg"])
+        actions.pack(fill="x")
+        self._copy_btn = RoundButton(actions, "Copiar script", command=self.copy_script, icon="copy",
+                                     icon_size=14, bg=p["input_bg"], fg=p["text"], height=30, parent_bg=p["bg"])
+        self._copy_btn.pack(side="left", padx=(0, 6))
+        RoundButton(actions, "Colar resposta do cliente", command=self.paste_answer, icon="paste",
+                    icon_size=14, bg=p["input_bg"], fg=p["text"], height=30,
+                    parent_bg=p["bg"]).pack(side="left", padx=(0, 6))
+        RoundButton(actions, "Limpar", command=self.clear_all, icon="trash", icon_size=14,
+                    bg=p["input_bg"], fg=p["text"], height=30, parent_bg=p["bg"]).pack(side="left")
+        self._status = tk.Label(top, text="", bg=p["bg"], fg=p["text_dim"], font=(FONT_FAMILY, 9),
+                                anchor="w")
+        self._status.pack(fill="x", pady=(6, 0))
+
+        # ---- rodapé (fixo): botões ----
+        bottom = tk.Frame(self, bg=p["bg"])
+        bottom.pack(side="bottom", fill="x")
+        tk.Frame(bottom, bg=p["border"], height=1).pack(fill="x")
+        btn_row = tk.Frame(bottom, bg=p["bg"])
+        btn_row.pack(pady=14)
+        RoundButton(btn_row, "Cancelar", command=self.on_cancel,
+                    bg=p["border"], fg=p["text"]).pack(side="left", padx=6)
+        RoundButton(btn_row, "Gerar PDF", command=self.on_generate, icon="file-text", icon_size=15,
+                    bg=p["accent"], fg=p["accent_text"]).pack(side="left", padx=6)
+
+        # ---- meio (rola): os campos ----
+        mid = tk.Frame(self, bg=p["bg"])
+        mid.pack(side="top", fill="both", expand=True)
+        tk.Frame(mid, bg=p["border"], height=1).pack(side="top", fill="x")
+        self._canvas = tk.Canvas(mid, bg=p["bg"], highlightthickness=0, bd=0, width=1, height=1)
+        self._vscroll = RoundScrollbar(mid, command=self._canvas.yview, track_bg=p["bg"],
+                                       track=p["scroll_track"], thumb=p["scroll_thumb"],
+                                       thumb_hover=p["scroll_thumb_hover"])
+        self._canvas.configure(yscrollcommand=self._vscroll.set)
+        self._vscroll.pack(side="right", fill="y", padx=(0, 4))
+        self._canvas.pack(side="left", fill="both", expand=True)
+        self._form = tk.Frame(self._canvas, bg=p["bg"])
+        self._form_win = self._canvas.create_window((0, 0), window=self._form, anchor="nw")
+        self._form.bind("<Configure>", lambda e: self._sync_scroll())
+        self._canvas.bind("<Configure>", lambda e: (self._canvas.itemconfigure(self._form_win, width=e.width),
+                                                    self._sync_scroll()))
+        self.bind("<MouseWheel>", self._on_wheel)
+
+        self.entries = {}
+        first = None
+        for title, fields in TIT_SECTIONS:
+            sec = tk.Frame(self._form, bg=p["bg"])
+            sec.pack(fill="x", padx=20, pady=(14, 2))
+            tk.Label(sec, text=title, bg=p["bg"], fg=p["accent"],
+                     font=(FONT_FAMILY, 11, "bold")).pack(anchor="w", pady=(0, 6))
+            for key, label, _pdf in fields:
+                row = tk.Frame(sec, bg=p["bg"])
+                row.pack(fill="x", pady=3)
+                row.columnconfigure(0, minsize=self.LABEL_W)
+                row.columnconfigure(1, weight=1)
+                lbl = tk.Label(row, text=label, bg=p["bg"], fg=p["text"], font=(FONT_FAMILY, 10), anchor="w")
+                lbl.grid(row=0, column=0, sticky="w")
+                field = tk.Frame(row, bg=p["field_bg"])
+                field.grid(row=0, column=1, sticky="ew")
+                entry = tk.Entry(field, textvariable=self.vars[key], font=(FONT_FAMILY, 10),
+                                 bg=p["field_bg"], fg=p["text"], relief="flat", bd=0,
+                                 highlightthickness=0, insertbackground=p["text"])
+                entry.pack(fill="x", padx=10, ipady=6)
+                field.bind("<Button-1>", lambda e, en=entry: en.focus_set())
+                lbl.bind("<Button-1>", lambda e, en=entry: en.focus_set())
+                attach_edit_menu(entry, palette)
+                entry.bind("<Return>", lambda e: self._focus_next(e.widget))
+                entry.bind("<FocusIn>", lambda e, w=row: self._ensure_visible(w), add="+")
+                self.entries[key] = entry
+                first = first or entry
+        tk.Frame(self._form, bg=p["bg"], height=12).pack()
+        self._initial_focus = first
+
+        sh = self.winfo_screenheight()
+        self.center(self.WIDTH, max(420, min(720, sh - 140)))
+        self._update_status_count()
+
+    # ---------- rolagem ----------
+    def _sync_scroll(self):
+        try:
+            self._canvas.configure(scrollregion=(0, 0, self._canvas.winfo_width(),
+                                                 max(self._form.winfo_reqheight(), self._canvas.winfo_height())))
+        except tk.TclError:
+            pass
+
+    def _on_wheel(self, event):
+        try:
+            first, last = self._canvas.yview()
+            if not (first <= 0.0 and last >= 1.0):
+                self._canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        except tk.TclError:
+            pass
+        return "break"                                 # não rola a lista do app por trás
+
+    def _ensure_visible(self, widget):
+        """Ao andar com Tab/Enter, rola até o campo ficar visível."""
+        try:
+            self.update_idletasks()
+            total = max(1, self._form.winfo_reqheight())
+            top = widget.winfo_rooty() - self._form.winfo_rooty()
+            bottom = top + widget.winfo_height()
+            view_h = self._canvas.winfo_height()
+            first = self._canvas.yview()[0] * total
+            if top < first:
+                self._canvas.yview_moveto(max(0, top - 30) / total)
+            elif bottom > first + view_h:
+                self._canvas.yview_moveto((bottom - view_h + 30) / total)
+        except tk.TclError:
+            pass
+
+    def _focus_next(self, widget):
+        keys = list(self.entries)
+        for i, k in enumerate(keys):
+            if self.entries[k] is widget and i + 1 < len(keys):
+                self.entries[keys[i + 1]].focus_set()
+                self.entries[keys[i + 1]].icursor("end")
+                break
+        return "break"
+
+    # ---------- ações ----------
+    def values(self):
+        return {k: " ".join(v.get().split()) for k, v in self.vars.items()}
+
+    def _update_status_count(self, extra=""):
+        filled = sum(1 for v in self.values().values() if v)
+        text = f"{filled} de {len(TIT_KEYS)} campos preenchidos"
+        self._status.configure(text=f"{extra}  •  {text}" if extra else text)
+
+    def copy_script(self):
+        self.clipboard_clear()
+        self.clipboard_append(TIT_SCRIPT)
+        self._update_status_count("Script copiado! Cole na conversa com o cliente")
+
+    def paste_answer(self):
+        try:
+            text = self.clipboard_get()
+        except tk.TclError:
+            text = ""
+        found = parse_titularidade(text)
+        if not found:
+            self._update_status_count("Não encontrei dados no texto copiado (copie a resposta do cliente)")
+            return
+        for k, v in found.items():
+            self.vars[k].set(v)
+        self._update_status_count("Resposta do cliente lida — confira os campos")
+
+    def clear_all(self):
+        for k, v in self.vars.items():
+            if k != "contrato":
+                v.set("")
+        self._update_status_count("Campos limpos")
+
+    def on_cancel(self):
+        self.saved_values = self.values()             # guarda o rascunho (fechar sem querer não perde nada)
+        self.result = None
+        self.destroy()
+
+    def on_generate(self):
+        vals = self.values()
+        empty = [label for _t, fields in TIT_SECTIONS for k, label, _p in fields if not vals.get(k)]
+        if empty:
+            names = ", ".join(empty[:6]) + ("…" if len(empty) > 6 else "")
+            if not ask_confirm(self, self.palette, "Campos vazios",
+                               f"{len(empty)} campo(s) vazio(s)",
+                               f"{names}.\nNo PDF eles aparecem como “Não fornecido”.",
+                               confirm_text="Gerar mesmo assim", confirm_icon="file-text",
+                               kind="warning"):
+                return
+        self.result = vals
+        self.saved_values = vals
+        self.destroy()
+
+
 class CopyScriptsApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -2567,22 +3125,27 @@ class CopyScriptsApp(tk.Tk):
     def _update_worker(self):
         """Roda numa thread: só mexe no dicionário de estado (a tela é atualizada por _watch_update)."""
         st = self._update_state
+        update_log(f"Verificando atualizações em {UPDATE_REPO} (exe: {sys.executable})")
         try:
             info = fetch_update_info()
         except Exception as e:
-            print(f"[{APP_NAME}] Não deu para verificar atualizações: {e}", file=sys.stderr)
+            update_log(f"Não deu para verificar atualizações: {type(e).__name__}: {e}")
             info = None
         if not info:
+            if st.get("phase") == "checking":
+                update_log("Nenhuma versão mais nova (ou sem acesso ao GitHub).")
             st["phase"] = "none"
             return
+        update_log(f"Versão nova encontrada: {info['version']}. Baixando...")
         st.update(version=info["version"], got=0, total=int(info.get("size") or 0))
         st["phase"] = "downloading"
         try:
             path = download_update(info, lambda g, t: st.update(got=g, total=t))
         except Exception as e:
-            print(f"[{APP_NAME}] Falha ao baixar a atualização: {e}", file=sys.stderr)
+            update_log(f"Falha ao baixar: {type(e).__name__}: {e}")
             st["phase"] = "failed"
             return
+        update_log(f"Download concluído: {path}")
         st["path"] = path
         st["phase"] = "ready"
 
@@ -2606,16 +3169,26 @@ class CopyScriptsApp(tk.Tk):
             self.after(250, self._finish_update)
 
     def _finish_update(self):
+        path = self._update_state["path"]
         try:
-            exe = install_update(self._update_state["path"])
+            try:
+                exe = install_update(path)
+                update_log("Arquivo trocado com o app aberto.")
+            except OSError as e:
+                update_log(f"Troca direta bloqueada ({e}); usando o ajudante do Windows.")
+                exe = None
             try:
                 self.save_data()
                 flush_mask_disk_cache()
             except Exception:
                 pass
-            relaunch(exe)
+            if exe:
+                relaunch(exe)
+            else:
+                install_update_after_exit(path)
+            update_log("Reiniciando na versão nova.")
         except Exception as e:
-            print(f"[{APP_NAME}] Falha ao instalar a atualização: {e}", file=sys.stderr)
+            update_log(f"Falha ao instalar: {type(e).__name__}: {e}")
             try:
                 os.remove(self._update_state.get("path", ""))
             except OSError:
@@ -2944,9 +3517,13 @@ class CopyScriptsApp(tk.Tk):
             btn = RoundButton(links_row, name, bg=p["input_bg"], fg=p["text"], height=32)
             btn.command = lambda n=name, f=url_fn, b=btn: self.open_with_contract(n, f, b)
             btn.pack(side="left", padx=(0, 8))
-        self.clip_label = tk.Label(links_row, text=self._clipboard_preview(),
+        # largura fixa: o botão ao lado não "anda" quando o texto copiado muda
+        self.clip_label = tk.Label(links_row, text=self._clipboard_preview(), width=27, anchor="w",
                                    bg=p["bg_alt"], fg=p["text_dim"], font=(FONT_FAMILY, 9))
         self.clip_label.pack(side="left", padx=(4, 0))
+        self.tit_button = RoundButton(links_row, "Troca de titularidade", command=self.open_titularidade,
+                                      icon="file-text", icon_size=15, bg=p["input_bg"], fg=p["text"], height=32)
+        self.tit_button.pack(side="left", padx=(8, 0))
         if not getattr(self, "_clip_polling", False):   # um único "vigia" da área de transferência
             self._clip_polling = True
             self.after(600, self._poll_clipboard)
@@ -2986,7 +3563,7 @@ class CopyScriptsApp(tk.Tk):
             inner_top, links_row = self._topbar_rows
             search_slack = max(0, self.search_frame.winfo_reqwidth() - 170)
             need_top = inner_top.winfo_reqwidth() - search_slack
-            need_links = links_row.winfo_reqwidth() - self.clip_label.winfo_reqwidth()
+            need_links = links_row.winfo_reqwidth()
             min_w = max(760, need_top, need_links) + 40 + 24      # margens + barra de rolagem
             min_h = 420
             self.minsize(min_w, min_h)
@@ -3104,6 +3681,50 @@ class CopyScriptsApp(tk.Tk):
         webbrowser.open(url_fn(contrato))
         self.tooltip.show(f"Abrindo {name} ({contrato})...", x, y,
                           bg=self.palette["success"], page_bg=self.palette["bg"], anchor=button)
+
+    def open_titularidade(self):
+        values = dict(getattr(self, "_tit_draft", None) or {})
+        if not values.get("contrato"):
+            contrato = self.contract_var.get().strip()
+            if contrato:
+                values["contrato"] = contrato
+        dlg = TitularidadeDialog(self, self.palette, values)
+        self.wait_window(dlg)
+        self._tit_draft = dlg.saved_values
+        if not dlg.result:
+            return
+        data = dlg.result
+        try:
+            folder = titularidade_output_dir()
+            name = titularidade_filename(data)
+            path = os.path.join(folder, name)
+            base, ext = os.path.splitext(path)
+            n = 2
+            while os.path.exists(path):
+                path = f"{base} ({n}){ext}"
+                n += 1
+            generate_titularidade_pdf(data, path)
+        except ImportError:
+            show_message(self, self.palette, "Troca de titularidade", "Falta a biblioteca de PDF.",
+                         "Rode o build_exe.bat (ou: python -m pip install reportlab==4.2.0) e tente de novo.",
+                         kind="error")
+            return
+        except Exception as e:
+            show_message(self, self.palette, "Troca de titularidade", "Não foi possível gerar o PDF.",
+                         str(e), kind="error")
+            return
+        self._tit_draft = None                         # termo gerado: o próximo começa limpo
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(path)                     # abre no leitor de PDF (de lá é só imprimir)
+            else:
+                webbrowser.open(path)
+        except Exception:
+            show_message(self, self.palette, "Troca de titularidade", "PDF gerado!",
+                         f"Salvo em:\n{path}", kind="success")
+            return
+        self.tooltip.show("Termo gerado! Abrindo o PDF...", 0, 0, bg=self.palette["success"],
+                          page_bg=self.palette["bg"], anchor=self.tit_button)
 
     def toggle_dark_mode(self):
         self.dark_mode = not self.dark_mode
@@ -3358,7 +3979,7 @@ class CopyScriptsApp(tk.Tk):
         cats = self.data.get("categories", [])
         n_cat = len(cats)
         n_items = sum(len(c["items"]) for c in cats)
-        self.status.config(text=f"{n_cat} categorias • {n_items} scripts cadastrados")
+        self.status.config(text=f"{n_cat} categorias • {n_items} scripts cadastrados • versão {APP_VERSION}")
 
     def render_category(self, cat, p):
         cat_id = cat["id"]
